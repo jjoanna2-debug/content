@@ -2,7 +2,7 @@
 title: 'Extend Sapat Providers in Daytona'
 description:
   'Build and verify a new Sapat transcription provider in a reproducible
-  Daytona workspace before opening an upstream PR.'
+  Daytona workspace with a maintainer-ready validation checklist.'
 date: 2026-05-11
 author: 'Jean-Claude Joanna'
 tags: ['sapat', 'daytona', 'transcription']
@@ -35,8 +35,9 @@ uploaded audio and returns a transcript.
   variables, upload/transcribe behavior, correction behavior, and output file.
 - Add the provider as a small [transcription provider adapter](../definitions/20260511_definition_transcription_provider_adapter.md),
   then prove it with mocked tests and a CLI smoke check.
-- Open one focused upstream PR and reference it from your Daytona content PR so
-  readers can inspect real code, not just a tutorial narrative.
+- Package the change with exact code references, commands, and failure-mode
+  notes so maintainers can review the provider without reconstructing your
+  workspace.
 
 ## Prerequisites
 
@@ -51,6 +52,23 @@ You need:
 The live provider call is optional while developing. You can validate most of
 the adapter contract with mocked HTTP tests, then run one credentialed smoke
 test before you ask maintainers to review.
+
+## Choose the Provider Before You Code
+
+Do not add a provider just because it has an API. Pick one that improves the
+tool's operating range. A quick scoring pass keeps the implementation grounded:
+
+| Provider | Best fit | Integration shape | Review risk |
+| --- | --- | --- | --- |
+| AssemblyAI | Long audio files, diarization, async jobs | Upload, submit, poll | Medium |
+| Deepgram | Fast streaming or batch transcription | Upload or remote URL, request transcript | Medium |
+| Speechmatics | Multilingual transcription workflows | Upload, configure job, poll | Medium |
+| Local Whisper | Offline privacy-sensitive clips | Local model runtime | High |
+
+For a first provider extension, choose an API that can be tested with mocked
+HTTP calls and one small live file. Avoid provider features that require a full
+queueing system, callback receiver, or background worker unless Sapat's base
+contract already supports them.
 
 ## Step 1: Create a Daytona Workspace
 
@@ -229,9 +247,9 @@ If the transcript is empty, inspect each step in the provider adapter: upload
 response, transcript submission response, final transcript status, and the
 language code you sent.
 
-## Step 7: Open a Focused Upstream PR
+## Step 7: Package a Maintainer-Ready Provider Patch
 
-Keep the upstream provider PR small. A good PR body includes:
+Keep the provider patch small. A good PR body includes:
 
 - the provider name and CLI flag,
 - the new environment variables,
@@ -256,8 +274,31 @@ For the AssemblyAI example, the PR should be shaped like this:
 - `git diff --check`
 ```
 
-After the provider PR is open, link it in your content PR. That gives the
-article a real implementation trail and lets readers inspect the exact code.
+If you cannot run a live provider call in the review environment, say so
+plainly. A mocked adapter test is still valuable because it proves Sapat's local
+contract: file in, provider selected, request shaped correctly, transcript text
+returned, and `.txt` output written by the base class.
+
+## Maintainer Review Checklist
+
+Before you ask for review, walk the branch like a maintainer would:
+
+- **CLI surface:** `sapat --help` lists the provider and no existing provider
+  name changed.
+- **Configuration:** the README names every required environment variable and
+  includes a minimal command that uses the provider.
+- **Failure behavior:** missing API keys, failed uploads, provider-side errors,
+  and polling timeouts raise useful messages.
+- **Output contract:** the adapter returns text in the shape expected by
+  `TranscriptionBase.process_file()`.
+- **Regression scope:** OpenAI, Groq, and Azure imports still compile after the
+  new provider is added.
+- **Review evidence:** the PR body includes the commands you ran and whether a
+  live credentialed smoke test was performed.
+
+This checklist is the difference between a tutorial branch and a reviewable
+provider extension. It gives maintainers concrete acceptance criteria instead
+of asking them to trust the article.
 
 ## Troubleshooting
 
@@ -289,8 +330,8 @@ integration contract: CLI selection, workspace configuration, upload behavior,
 result polling, transcript output, and tests that prove the flow is reviewable.
 
 Daytona gives you a clean place to build and repeat that contract. Once the
-provider PR is open, the guide becomes more useful too: readers can follow the
-workflow and compare it against a real upstream implementation.
+provider patch is packaged with tests and review notes, readers can follow the
+workflow and compare their own provider against a concrete acceptance checklist.
 
 ## References
 
@@ -300,4 +341,3 @@ workflow and compare it against a real upstream implementation.
 - [OpenAI speech-to-text prompting guide](https://developers.openai.com/api/docs/guides/speech-to-text#prompting)
 - [Daytona getting started docs](https://www.daytona.io/docs/getting-started)
 - [Daytona environment configuration docs](https://www.daytona.io/docs/configuration)
-- [AssemblyAI provider PR for Sapat](https://github.com/nibzard/sapat/pull/12)
