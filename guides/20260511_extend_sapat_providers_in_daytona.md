@@ -208,6 +208,30 @@ sapat product_demo.mp4 --quality M --language en --api assemblyai
 This matters because maintainers should be able to see the new provider from
 the CLI, the README, and the tests without reverse-engineering your branch.
 
+## Provider Security and Privacy Guardrails
+
+Provider adapters move local audio, transcripts, and API credentials across a
+network boundary, so review the patch before any live smoke test. A small
+guardrail pass catches most mistakes:
+
+- Keep provider keys in `.env` or the workspace secret store. Do not paste real
+  keys into README examples, test fixtures, screenshots, PR bodies, or logs.
+- Use short, non-sensitive sample clips for live validation. Do not upload
+  private customer calls, unreleased demos, medical files, or legal recordings
+  just to prove the adapter works.
+- Redact provider request IDs, account IDs, and full transcript text from public
+  review notes unless the sample was created for public testing.
+- Mock upload, polling, timeout, and provider-error paths in tests so the branch
+  can be reviewed without spending credits or exposing real audio.
+- Keep endpoint overrides explicit. If the provider supports a custom endpoint,
+  validate that it starts with `https://` and document why the override exists.
+- Remove temporary MP3 files and avoid printing local file paths in exceptions
+  unless the path is needed for a developer-facing error.
+
+This pass is not extra process. It is part of making the provider extension
+mergeable: maintainers can review the API boundary, the privacy boundary, and
+the failure behavior without guessing what happened in your workspace.
+
 ## Step 5: Test Without Spending API Credits
 
 Start with mocked tests. A good test proves that the adapter:
