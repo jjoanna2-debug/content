@@ -169,6 +169,25 @@ from .transcription.assemblyai import AssemblyAITranscription
 
 The branch should now expose `assemblyai` in `sapat --help`.
 
+## Provider Acceptance Matrix
+
+Before the PR leaves your workspace, reduce the provider to a small acceptance
+matrix. This keeps review focused on Sapat's contract instead of the provider's
+marketing surface.
+
+| Contract point | AssemblyAI example | Proof to include |
+| --- | --- | --- |
+| CLI selection | `--api assemblyai` | `sapat --help` shows the new choice |
+| Secret loading | `ASSEMBLYAI_API_KEY` | missing-key test raises a useful error |
+| Audio handoff | upload converted MP3 | mocked upload request receives the file |
+| Job lifecycle | submit, poll, complete | mocked completed and failed job responses |
+| Return shape | `{"text": "..."}` | base class writes the transcript `.txt` |
+| Regression guard | existing providers unchanged | compile OpenAI, Groq, and Azure modules |
+
+If one row cannot be proven yet, keep it explicit in the PR body. Maintainers
+can decide quickly when the missing piece is named, but they have to reverse
+engineer the branch when the proof is vague.
+
 ## Step 4: Document the Environment Variables
 
 Add the provider's configuration to the README `.env` example:
