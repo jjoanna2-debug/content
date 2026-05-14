@@ -214,11 +214,14 @@ Provider adapters move local audio, transcripts, and API credentials across a
 network boundary, so review the patch before any live smoke test. A small
 guardrail pass catches most mistakes:
 
-- Keep provider keys in `.env` or the workspace secret store. Do not paste real
-  keys into README examples, test fixtures, screenshots, PR bodies, or logs.
+- Keep provider keys in `.env` or the workspace secret store, and confirm
+  `.env` is ignored before adding a real key. Do not paste real keys into README
+  examples, test fixtures, screenshots, PR bodies, or logs.
 - Use short, non-sensitive sample clips for live validation. Do not upload
   private customer calls, unreleased demos, medical files, or legal recordings
   just to prove the adapter works.
+- Keep generated smoke-test media and transcripts out of commits unless they are
+  deliberately public fixtures created for review.
 - Redact provider request IDs, account IDs, and full transcript text from public
   review notes unless the sample was created for public testing.
 - Mock upload, polling, timeout, and provider-error paths in tests so the branch
