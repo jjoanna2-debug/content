@@ -181,7 +181,9 @@ marketing surface.
 | Secret loading | `ASSEMBLYAI_API_KEY` | missing-key test raises a useful error |
 | Audio handoff | upload converted MP3 | mocked upload request receives the file |
 | Job lifecycle | submit, poll, complete | mocked completed and failed job responses |
+| Retry boundary | rate limits, timeouts, slow jobs | mocked retry/backoff and timeout cases |
 | Return shape | `{"text": "..."}` | base class writes the transcript `.txt` |
+| Error privacy | provider errors and request metadata | tests/log review show no API keys or full transcript text |
 | Regression guard | existing providers unchanged | compile OpenAI, Groq, and Azure modules |
 
 If one row cannot be proven yet, keep it explicit in the PR body. Maintainers
@@ -224,6 +226,8 @@ guardrail pass catches most mistakes:
   deliberately public fixtures created for review.
 - Redact provider request IDs, account IDs, and full transcript text from public
   review notes unless the sample was created for public testing.
+- Do not log authorization headers, raw `.env` values, or full provider
+  response bodies when raising provider errors.
 - Mock upload, polling, timeout, and provider-error paths in tests so the branch
   can be reviewed without spending credits or exposing real audio.
 - Keep endpoint overrides explicit. If the provider supports a custom endpoint,
