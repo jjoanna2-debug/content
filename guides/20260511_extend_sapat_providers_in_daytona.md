@@ -13,10 +13,11 @@ tags: ['sapat', 'daytona', 'transcription']
 # Introduction
 
 Sapat is a Python command-line tool for turning video files into transcripts. It
-converts video to MP3 with FFmpeg, sends the audio to a selected transcription
-provider, and writes a same-name `.txt` file next to the source video. Today,
-the project supports OpenAI, Groq, and Azure OpenAI through the required
-`--api` flag.
+converts video to a provider-friendly audio format with FFmpeg, sends the audio
+to a selected transcription provider, and writes a same-name `.txt` file next to
+the source video. Current Sapat uses a provider registry under
+`sapat/providers/` and a dynamic `--provider` CLI option, so new integrations
+should fit the registry instead of hard-coding another command-line choice.
 
 That makes Sapat a useful small project for AI engineers who want to learn how a
 provider adapter should be added, tested, and documented. This guide shows a
@@ -31,8 +32,9 @@ uploaded audio and returns a transcript.
 
 - Create a Daytona workspace from the Sapat repository so the same branch can be
   tested from a clean environment.
-- Map the current provider contract before writing code: CLI flag, environment
-  variables, upload/transcribe behavior, correction behavior, and output file.
+- Map the current provider contract before writing code: registry entry,
+  environment variables, upload/transcribe behavior, correction behavior, and
+  output file.
 - Add the provider as a small [transcription provider adapter](../definitions/20260511_definition_transcription_provider_adapter.md),
   then prove it with mocked tests and a CLI smoke check.
 - Package the change with exact code references, commands, and failure-mode
@@ -102,29 +104,35 @@ Confirm the CLI works before changing anything:
 sapat --help
 ```
 
-You should see the required `--api` option with the currently supported
-providers.
+You should see the `--provider` option and the available providers discovered
+from the registry.
 
 ## Step 2: Map the Existing Provider Contract
 
 Before adding a provider, read the current code paths:
 
 ```bash
-sed -n '1,180p' src/sapat/script.py
-sed -n '1,220p' src/sapat/transcription/base.py
-sed -n '1,220p' src/sapat/transcription/openai.py
-sed -n '1,220p' src/sapat/transcription/groq.py
-sed -n '1,220p' src/sapat/transcription/azure.py
+sed -n '1,180p' sapat/cli.py
+sed -n '1,220p' sapat/process.py
+sed -n '1,220p' sapat/providers/__init__.py
+sed -n '1,220p' sapat/providers/base.py
+sed -n '1,220p' sapat/providers/speechmatics.py
 ```
 
 The important contract is small:
 
-- `src/sapat/script.py` selects a provider from the required `--api` flag.
-- `TranscriptionBase.process_file()` converts the input video to MP3, calls
-  `transcribe_audio()`, writes a `.txt` file, and removes the temporary MP3.
-- Each provider reads credentials from `.env` using `python-dotenv`.
-- Providers return either a text string or a dictionary with a `text` value.
-- The optional `--correct` flow calls `generate_corrected_transcript()`.
+- `sapat/cli.py` resolves the selected `--provider` from
+  `get_available_providers()`.
+- `sapat/providers/__init__.py` auto-discovers provider modules and only
+  registers classes whose required environment variables and packages are
+  available.
+- `sapat/process.py` converts the input video to the provider's preferred audio
+  format, calls `provider.transcribe()`, writes the returned text to a `.txt`
+  file, and removes temporary audio.
+- Each provider subclasses `TranscriptionProvider`, sets a `name`, declares a
+  `ProviderConfig`, and returns a `TranscriptionResult`.
+- The optional `--correct` flow only runs when the provider config says
+  correction is supported.
 
 Write the new provider to fit that shape. Avoid changing the base flow unless
 the new API truly requires it.
@@ -137,37 +145,44 @@ For AssemblyAI, the REST flow has three steps:
 2. Submit a transcript job to `/v2/transcript`.
 3. Poll `/v2/transcript/{id}` until the status is `completed` or `error`.
 
-Add a file such as `src/sapat/transcription/assemblyai.py`. Keep the
-implementation direct and easy to review:
+Add a file such as `sapat/providers/assemblyai.py`. Keep the implementation
+direct and easy to review:
 
 ```python
-class AssemblyAITranscription(TranscriptionBase):
-    def transcribe_audio(self, audio_file: str, **kwargs):
-        self._validate_audio_file(audio_file)
+from sapat.providers import register
+from sapat.providers.async_poll import AsyncPollProvider
+from sapat.providers.base import ProviderConfig, TranscriptionResult
+
+
+@register
+class AssemblyAIProvider(AsyncPollProvider):
+    name = "assemblyai"
+    config = ProviderConfig(
+        required_env_vars=["ASSEMBLYAI_API_KEY"],
+        default_model="best",
+    )
+
+    def _upload(self, audio_file: str, model: str, language: str, **kwargs) -> str:
         upload_url = self._upload_audio(audio_file)
-        transcript_id = self._submit_transcript(upload_url, **kwargs)
-        transcript = self._poll_transcript(transcript_id)
-        return {
-            "text": transcript.get("text", ""),
-            "id": transcript_id,
-            "status": transcript.get("status"),
-        }
+        return self._submit_transcript(upload_url, model=model, language=language)
+
+    def _fetch_result(self, job_id: str) -> TranscriptionResult:
+        transcript = self._get_transcript(job_id)
+        return TranscriptionResult(text=transcript.get("text", ""))
 ```
 
-Then wire the class into `src/sapat/script.py`:
+With the registry, you normally do not add the provider to a `click.Choice()`.
+The module-level `@register` decorator makes the provider discoverable when its
+environment variables and optional dependencies are available. The CLI should
+then accept the provider by name:
 
-```python
-from .transcription.assemblyai import AssemblyAITranscription
-
-@click.option(
-    "--api",
-    "-a",
-    type=click.Choice(["openai", "groq", "azure", "assemblyai"]),
-    required=True,
-)
+```bash
+sapat sample.mp4 --quality M --language en --provider assemblyai
 ```
 
-The branch should now expose `assemblyai` in `sapat --help`.
+The branch should also expose `assemblyai` through registry-level tests for
+`get_available_providers()` and provider instantiation when
+`ASSEMBLYAI_API_KEY` is present.
 
 ## Provider Acceptance Matrix
 
@@ -177,14 +192,14 @@ marketing surface.
 
 | Contract point | AssemblyAI example | Proof to include |
 | --- | --- | --- |
-| CLI selection | `--api assemblyai` | `sapat --help` shows the new choice |
+| CLI selection | `--provider assemblyai` | CLI accepts the registry provider name |
 | Secret loading | `ASSEMBLYAI_API_KEY` | missing-key test raises a useful error |
 | Audio handoff | upload converted MP3 | mocked upload request receives the file |
 | Job lifecycle | submit, poll, complete | mocked completed and failed job responses |
 | Retry boundary | rate limits, timeouts, slow jobs | mocked retry/backoff and timeout cases |
-| Return shape | `{"text": "..."}` | base class writes the transcript `.txt` |
+| Return shape | `TranscriptionResult(text="...")` | process layer writes the transcript `.txt` |
 | Error privacy | provider errors and request metadata | tests/log review show no API keys or full transcript text |
-| Regression guard | existing providers unchanged | compile OpenAI, Groq, and Azure modules |
+| Regression guard | existing providers unchanged | compile provider registry, CLI, and tests |
 
 If one row cannot be proven yet, keep it explicit in the PR body. Maintainers
 can decide quickly when the missing piece is named, but they have to reverse
@@ -204,7 +219,7 @@ ASSEMBLYAI_TIMEOUT_SECONDS=600
 Also add one usage example:
 
 ```bash
-sapat product_demo.mp4 --quality M --language en --api assemblyai
+sapat product_demo.mp4 --quality M --language en --provider assemblyai
 ```
 
 This matters because maintainers should be able to see the new provider from
@@ -252,13 +267,13 @@ Start with mocked tests. A good test proves that the adapter:
 Run the focused test first:
 
 ```bash
-python -m unittest tests.test_assemblyai
+python -m pytest tests/providers/test_assemblyai.py
 ```
 
 Then run source compilation and the CLI smoke check:
 
 ```bash
-python -m compileall src tests
+python -m compileall sapat tests
 sapat --help
 git diff --check
 ```
@@ -284,7 +299,7 @@ ASSEMBLYAI_TIMEOUT_SECONDS=600
 Run Sapat:
 
 ```bash
-sapat sample.mp4 --quality M --language en --api assemblyai
+sapat sample.mp4 --quality M --language en --provider assemblyai
 ```
 
 Check the output:
@@ -301,7 +316,7 @@ language code you sent.
 
 Keep the provider patch small. A good PR body includes:
 
-- the provider name and CLI flag,
+- the provider name and registry entry,
 - the new environment variables,
 - the mocked test coverage,
 - the exact validation commands, and
@@ -312,14 +327,14 @@ For the AssemblyAI example, the PR should be shaped like this:
 
 ```md
 ## Summary
-- add an AssemblyAI transcription backend available through `--api assemblyai`
+- add an AssemblyAI transcription provider available through `--provider assemblyai`
 - upload local audio to AssemblyAI, submit a transcript job, and poll until completion
 - document AssemblyAI environment variables and usage
-- add mocked unit tests for successful transcription and API error handling
+- add mocked unit tests for registry availability, successful transcription, and API error handling
 
 ## Validation
-- `python -m compileall src tests`
-- `python -m unittest tests.test_assemblyai`
+- `python -m compileall sapat tests`
+- `python -m pytest tests/test_registry.py tests/providers/test_assemblyai.py`
 - `sapat --help`
 - `git diff --check`
 ```
@@ -333,16 +348,16 @@ returned, and `.txt` output written by the base class.
 
 Before you ask for review, walk the branch like a maintainer would:
 
-- **CLI surface:** `sapat --help` lists the provider and no existing provider
-  name changed.
+- **CLI surface:** `sapat --help` accepts `--provider`, and registry tests show
+  the new provider appears when its requirements are available.
 - **Configuration:** the README names every required environment variable and
   includes a minimal command that uses the provider.
 - **Failure behavior:** missing API keys, failed uploads, provider-side errors,
   and polling timeouts raise useful messages.
-- **Output contract:** the adapter returns text in the shape expected by
-  `TranscriptionBase.process_file()`.
-- **Regression scope:** OpenAI, Groq, and Azure imports still compile after the
-  new provider is added.
+- **Output contract:** the adapter returns a `TranscriptionResult` with the text
+  expected by `process_file()`.
+- **Regression scope:** the provider registry, existing providers, and CLI
+  smoke checks still pass after the new provider is added.
 - **Review evidence:** the PR body includes the commands you ran and whether a
   live credentialed smoke test was performed.
 
@@ -354,8 +369,9 @@ of asking them to trust the article.
 
 **Problem:** `sapat --help` does not show the new provider.
 
-**Solution:** Confirm the new class is imported in `src/sapat/script.py` and
-that `click.Choice()` includes the provider name.
+**Solution:** Confirm the new provider module lives under `sapat/providers/`,
+uses `@register`, sets a unique `name`, and has its required environment
+variables available when registry discovery runs.
 
 **Problem:** the test fails before it reaches your mocked HTTP calls.
 
@@ -370,8 +386,8 @@ text is ready.
 
 **Problem:** the output `.txt` file exists but is empty.
 
-**Solution:** make sure the adapter returns either a string or a dictionary with
-the `text` key. `TranscriptionBase.process_file()` writes that value to disk.
+**Solution:** make sure the adapter returns a `TranscriptionResult` whose
+`text` field is populated. `process_file()` writes that value to disk.
 
 ## Conclusion
 
