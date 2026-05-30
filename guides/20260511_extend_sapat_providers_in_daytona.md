@@ -166,6 +166,13 @@ class AssemblyAIProvider(AsyncPollProvider):
         upload_url = self._upload_audio(audio_file)
         return self._submit_transcript(upload_url, model=model, language=language)
 
+    def _poll(self, job_id: str) -> str:
+        transcript = self._get_transcript(job_id)
+        status = transcript.get("status")
+        if status == "error":
+            return "failed"
+        return status
+
     def _fetch_result(self, job_id: str) -> TranscriptionResult:
         transcript = self._get_transcript(job_id)
         return TranscriptionResult(text=transcript.get("text", ""))
