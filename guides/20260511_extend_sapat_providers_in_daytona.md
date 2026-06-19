@@ -254,6 +254,9 @@ guardrail pass catches most mistakes:
   can be reviewed without spending credits or exposing real audio.
 - Keep endpoint overrides explicit. If the provider supports a custom endpoint,
   validate that it starts with `https://` and document why the override exists.
+- Keep API keys out of endpoint URLs. Store credentials in headers or
+  environment variables, reject endpoint values with query strings, and point
+  overrides only at the provider host or an approved test double.
 - Remove temporary MP3 files and avoid printing local file paths in exceptions
   unless the path is needed for a developer-facing error.
 
