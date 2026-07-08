@@ -45,7 +45,7 @@ uploaded audio and returns a transcript.
 
 You need:
 
-- A GitHub account and a fork of `nkkko/sapat`.
+- A GitHub account and a fork of `nibzard/sapat`.
 - Daytona installed and authenticated.
 - Python 3.10 or later for local validation.
 - FFmpeg available in the workspace.
@@ -79,8 +79,12 @@ Start from the upstream repository or your fork. Daytona's current docs show
 README also documents creating a workspace directly from the repository.
 
 ```bash
-daytona create https://github.com/nkkko/sapat --code
+daytona create https://github.com/nibzard/sapat --code
 ```
+
+This guide was checked against Sapat `main` at `ba900b7`. If you use a fork or
+redirecting repository URL, verify the package layout and provider registry
+before copying the commands below.
 
 Inside the workspace, create a feature branch:
 
@@ -133,6 +137,12 @@ The important contract is small:
   `ProviderConfig`, and returns a `TranscriptionResult`.
 - The optional `--correct` flow only runs when the provider config says
   correction is supported.
+- `sapat/providers/async_poll.py` is a shared helper, not a provider module;
+  registry discovery skips helper modules. Put the concrete provider in its own
+  module, such as `assemblyai.py`, and keep only provider classes registered
+  with `@register`.
+- Reset registry state in tests when mutating provider availability so
+  `_registry` and `_discovered` do not leak across cases.
 
 Write the new provider to fit that shape. Avoid changing the base flow unless
 the new API truly requires it.
@@ -204,6 +214,7 @@ marketing surface.
 | Audio handoff | upload converted MP3 | mocked upload request receives the file |
 | Job lifecycle | submit, poll, complete | mocked completed and failed job responses |
 | Retry boundary | rate limits, timeouts, slow jobs | mocked retry/backoff and timeout cases |
+| Endpoint boundary | fixed provider API host | tests reject non-HTTPS, query-string, and wrong-host overrides |
 | Return shape | `TranscriptionResult(text="...")` | process layer writes the transcript `.txt` |
 | Error privacy | provider errors and request metadata | tests/log review show no API keys or full transcript text |
 | Regression guard | existing providers unchanged | compile provider registry, CLI, and tests |
@@ -264,6 +275,61 @@ This pass is not extra process. It is part of making the provider extension
 mergeable: maintainers can review the API boundary, the privacy boundary, and
 the failure behavior without guessing what happened in your workspace.
 
+## Lock Down the Endpoint Boundary
+
+Endpoint overrides are useful for tests, but they are also the easiest way to
+turn a provider adapter into an accidental credential leak. Treat the endpoint
+as configuration with a tight allowlist, not as a free-form URL from user input.
+
+For AssemblyAI, keep production traffic on `api.assemblyai.com` and allow a
+local test double only inside tests:
+
+```python
+from urllib.parse import urlparse
+
+
+PRODUCTION_ENDPOINT_HOSTS = {"api.assemblyai.com"}
+LOCAL_TEST_ENDPOINT_HOSTS = {"localhost", "127.0.0.1"}
+
+
+def normalize_endpoint(value: str, *, allow_local_test_host: bool = False) -> str:
+    parsed = urlparse(value)
+
+    if parsed.query or parsed.username or parsed.password:
+        raise ValueError("AssemblyAI endpoint must not contain credentials or query strings")
+
+    if parsed.hostname in LOCAL_TEST_ENDPOINT_HOSTS:
+        if not allow_local_test_host:
+            raise ValueError("Local endpoint hosts are allowed only in tests")
+    elif parsed.hostname not in PRODUCTION_ENDPOINT_HOSTS:
+        raise ValueError(f"Unexpected AssemblyAI endpoint host: {parsed.hostname}")
+
+    if parsed.scheme != "https":
+        if parsed.hostname not in LOCAL_TEST_ENDPOINT_HOSTS or not allow_local_test_host:
+            raise ValueError("AssemblyAI endpoint must use HTTPS")
+
+    return value.rstrip("/")
+```
+
+Add tests for this boundary before the live smoke test:
+
+```bash
+python -m pytest tests/providers/test_assemblyai.py -k 'endpoint or secret or timeout'
+```
+
+This is the decisive review point. A provider adapter that accepts arbitrary
+endpoints can send API keys and uploaded audio to the wrong host. A provider
+adapter that rejects non-HTTPS, credentials-in-URL, query strings, and unknown
+hosts keeps the network boundary reviewable.
+
+## Keep Polling Bounded
+
+Prefer polling for Sapat providers unless the base tool grows a signed webhook
+receiver. Do not add public tunnels, callback URLs, or webhook secrets just for
+a provider adapter. Poll with an explicit interval, timeout, provider request
+timeout, and terminal-status mapping. Tests should cover completed, failed,
+pending-then-timeout, and malformed-status responses.
+
 ## Step 5: Test Without Spending API Credits
 
 Start with mocked tests. A good test proves that the adapter:
@@ -272,7 +338,10 @@ Start with mocked tests. A good test proves that the adapter:
 - submits the returned upload URL to the transcript endpoint,
 - passes the selected language as `language_code`,
 - returns the final transcript text, and
-- raises a useful error when the provider reports a failed job.
+- raises a useful error when the provider reports a failed job,
+- rejects unsafe endpoint overrides before sending any request, and
+- avoids logging API keys, request headers, raw provider responses, or full
+  transcript text on failures.
 
 Run the focused test first:
 
@@ -286,6 +355,7 @@ Then run source compilation and the CLI smoke check:
 python -m compileall sapat tests
 sapat --help
 git diff --check
+npx --yes markdownlint-cli guides/20260511_extend_sapat_providers_in_daytona.md
 ```
 
 These checks do not prove the provider account works, but they prove the local
@@ -321,6 +391,9 @@ cat sample.txt
 If the transcript is empty, inspect each step in the provider adapter: upload
 response, transcript submission response, final transcript status, and the
 language code you sent.
+Do not paste the full transcript into the PR. Record only that the output file
+was created, the expected short public fixture sentence appeared, and no private
+media or generated transcript was committed.
 
 ## Step 7: Package a Maintainer-Ready Provider Patch
 
@@ -340,19 +413,31 @@ For the AssemblyAI example, the PR should be shaped like this:
 - add an AssemblyAI transcription provider available through `--provider assemblyai`
 - upload local audio to AssemblyAI, submit a transcript job, and poll until completion
 - document AssemblyAI environment variables and usage
-- add mocked unit tests for registry availability, successful transcription, and API error handling
+- add mocked unit tests for registry availability, endpoint validation, successful transcription, timeout handling, and API error handling
 
 ## Validation
 - `python -m compileall sapat tests`
 - `python -m pytest tests/test_registry.py tests/providers/test_assemblyai.py`
 - `sapat --help`
 - `git diff --check`
+- `git ls-files | rg '(^|/)\.env$|\.mp3$|\.mp4$|sample\.txt$'`
+- `git grep -nE 'Bearer [A-Za-z0-9_.-]{20,}|ASSEMBLYAI_API_KEY=' -- . | rg -v 'ASSEMBLYAI_API_KEY=your_|git grep -nE'`
 ```
 
 If you cannot run a live provider call in the review environment, say so
 plainly. A mocked adapter test is still valuable because it proves Sapat's local
 contract: file in, provider selected, request shaped correctly, transcript text
 returned, and `.txt` output written by the base class.
+
+Add a short proof packet after the validation list:
+
+```md
+## Security / Privacy Proof
+- no real API keys, transcripts, MP3 files, or generated `.env` files are committed
+- endpoint overrides reject non-HTTPS production URLs, credentials in URLs, query strings, and unknown hosts
+- failure paths redact authorization headers, provider request metadata, and transcript text
+- live smoke test used a short non-sensitive clip / live smoke test was skipped because no review-safe credential was available
+```
 
 ## Maintainer Review Checklist
 
@@ -364,6 +449,8 @@ Before you ask for review, walk the branch like a maintainer would:
   includes a minimal command that uses the provider.
 - **Failure behavior:** missing API keys, failed uploads, provider-side errors,
   and polling timeouts raise useful messages.
+- **Endpoint boundary:** endpoint overrides cannot redirect audio or credentials
+  to arbitrary hosts.
 - **Output contract:** the adapter returns a `TranscriptionResult` with the text
   expected by `process_file()`.
 - **Regression scope:** the provider registry, existing providers, and CLI
@@ -411,7 +498,7 @@ workflow and compare their own provider against a concrete acceptance checklist.
 
 ## References
 
-- [Sapat repository](https://github.com/nkkko/sapat)
+- [Sapat repository](https://github.com/nibzard/sapat)
 - [AssemblyAI transcription API](https://www.assemblyai.com/docs/api-reference/transcripts/submit)
 - [AssemblyAI local-file transcription guide](https://www.assemblyai.com/docs/getting-started/transcribe-an-audio-file/)
 - [OpenAI speech-to-text prompting guide](https://developers.openai.com/api/docs/guides/speech-to-text#prompting)
